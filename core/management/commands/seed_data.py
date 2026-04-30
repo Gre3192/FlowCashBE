@@ -1,3 +1,4 @@
+import random
 from decimal import Decimal
 from datetime import date
 
@@ -8,7 +9,14 @@ from core.models import Category, Transaction, Budget, TransactionEntry
 
 
 class Command(BaseCommand):
+
     help = "Popola il database con dati di test per FlowCash"
+
+    def random_month_values(self, min_value = 0.00, max_value = 1000.00, months = 12):
+        return [
+            Decimal(str(round(random.uniform(min_value, max_value), 2)))
+            for _ in range(months)
+        ]
 
     def handle(self, *args, **options):
         self.stdout.write(self.style.WARNING("Seed database started..."))
@@ -19,6 +27,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Seed completato con successo."))
 
     def create_seed_data(self):
+
         categories_data = [
             "Abbonamenti",
             "Casa",
@@ -42,8 +51,8 @@ class Command(BaseCommand):
                 "type": "Expense",
                 "category": categories["Abbonamenti"],
                 "budget": {
-                    2026: [4.99] * 12,
-                    2027: [4.99] * 12,
+                    2026: self.random_month_values(),
+                    2027: self.random_month_values(),
                 },
                 "entries": [
                     {
@@ -63,7 +72,7 @@ class Command(BaseCommand):
                 "type": "Expense",
                 "category": categories["Abbonamenti"],
                 "budget": {
-                    2026: [12.99] * 12,
+                    2026: self.random_month_values(),
                 },
                 "entries": [
                     {
@@ -78,7 +87,7 @@ class Command(BaseCommand):
                 "type": "Expense",
                 "category": categories["Casa"],
                 "budget": {
-                    2026: [650.00] * 12,
+                    2026: self.random_month_values(),
                 },
                 "entries": [
                     {
@@ -93,7 +102,7 @@ class Command(BaseCommand):
                 "type": "Expense",
                 "category": categories["Trasporti"],
                 "budget": {
-                    2026: [120.00] * 12,
+                    2026: self.random_month_values(),
                 },
                 "entries": [
                     {
@@ -113,7 +122,7 @@ class Command(BaseCommand):
                 "type": "Income",
                 "category": categories["Stipendio"],
                 "budget": {
-                    2026: [1800.00] * 12,
+                    2026: self.random_month_values(),
                 },
                 "entries": [
                     {
@@ -149,7 +158,7 @@ class Command(BaseCommand):
 
             for year, values in item["budget"].items():
                 budget_values = {
-                    month_fields[index]: Decimal(str(value))
+                    month_fields[index]: value
                     for index, value in enumerate(values)
                 }
 
