@@ -3,11 +3,23 @@ from django.db import models
 
 
 class Category(models.Model):
-    uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
     name = models.CharField(max_length=120, unique=True)
 
     class Meta:
         db_table = "categories"
+        ordering = ["name"]
+        indexes = [
+            models.Index(fields=["name"]),
+        ]
+
+    def __str__(self):
+        return self.name
 
 
 class Transaction(models.Model):
@@ -15,10 +27,18 @@ class Transaction(models.Model):
         INCOME = "Income", "Income"
         EXPENSE = "Expense", "Expense"
 
-    uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
 
     name = models.CharField(max_length=120)
-    type = models.CharField(max_length=20, choices=TransactionType.choices)
+
+    type = models.CharField(
+        max_length=20,
+        choices=TransactionType.choices,
+    )
 
     category = models.ForeignKey(
         Category,
@@ -29,10 +49,24 @@ class Transaction(models.Model):
 
     class Meta:
         db_table = "transactions"
+        ordering = ["name"]
+        indexes = [
+            models.Index(fields=["name"]),
+            models.Index(fields=["type"]),
+            models.Index(fields=["category"]),
+            models.Index(fields=["category", "type"]),
+        ]
+
+    def __str__(self):
+        return f"{self.name} - {self.type}"
 
 
 class Budget(models.Model):
-    uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
 
     transaction = models.ForeignKey(
         Transaction,
@@ -58,16 +92,29 @@ class Budget(models.Model):
 
     class Meta:
         db_table = "budget"
+        ordering = ["transaction", "year"]
         constraints = [
             models.UniqueConstraint(
                 fields=["transaction", "year"],
                 name="unique_budget_transaction_year",
             )
         ]
+        indexes = [
+            models.Index(fields=["transaction"]),
+            models.Index(fields=["year"]),
+            models.Index(fields=["transaction", "year"]),
+        ]
+
+    def __str__(self):
+        return f"{self.transaction.name} - {self.year}"
 
 
 class TransactionEntry(models.Model):
-    uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
 
     transaction = models.ForeignKey(
         Transaction,
@@ -82,3 +129,12 @@ class TransactionEntry(models.Model):
 
     class Meta:
         db_table = "transaction_entries"
+        ordering = ["-entry_date"]
+        indexes = [
+            models.Index(fields=["transaction"]),
+            models.Index(fields=["entry_date"]),
+            models.Index(fields=["transaction", "entry_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.transaction.name} - {self.amount} - {self.entry_date}"
