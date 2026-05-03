@@ -6,7 +6,7 @@ from .views import (
     TransactionViewSet,
     BudgetViewSet,
     TransactionEntryViewSet,
-    monthly_overview,
+    MonthlyOverviewAPIView,
 )
 
 router = DefaultRouter()
@@ -17,7 +17,11 @@ router.register(r"budget", BudgetViewSet, basename="budget")
 router.register(r"transaction-entries", TransactionEntryViewSet, basename="transaction-entry")
 
 urlpatterns = [
-    path("flowcash/monthly-overview/", monthly_overview, name="monthly-overview"),
+    path(
+        "flowcash/monthly-overview/",
+        MonthlyOverviewAPIView.as_view(),
+        name="monthly-overview",
+    ),
 ]
 
 urlpatterns += router.urls
