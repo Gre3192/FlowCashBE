@@ -273,6 +273,7 @@ def monthly_overview(request):
             {
                 "id": category.id,
                 "name": category.name,
+                "has_transactions": len(category_transactions) > 0,
                 "transactions": transactions_response,
                 "category_budget_total": decimal_to_string(category_budget_total),
                 "category_entries_total": decimal_to_string(category_entries_total),

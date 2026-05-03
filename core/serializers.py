@@ -3,9 +3,14 @@ from .models import Category, Transaction, Budget, TransactionEntry
 
 
 class CategorySerializer(serializers.ModelSerializer):
+    has_transactions = serializers.SerializerMethodField()
+
     class Meta:
         model = Category
-        fields = ["id", "name"]
+        fields = ["id", "name", "has_transactions"]
+
+    def get_has_transactions(self, obj):
+        return obj.transactions.exists()
 
 
 class BudgetSerializer(serializers.ModelSerializer):
