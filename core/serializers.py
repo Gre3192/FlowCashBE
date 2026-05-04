@@ -1,5 +1,11 @@
 from rest_framework import serializers
-from .models import Category, Transaction, Budget, TransactionEntry
+
+from .models import (
+    Category,
+    Transaction,
+    TransactionBudget,
+    TransactionMovement,
+)
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -7,13 +13,17 @@ class CategorySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Category
-        fields = ["id", "name", "has_transactions"]
+        fields = [
+            "id",
+            "name",
+            "has_transactions",
+        ]
 
     def get_has_transactions(self, obj):
         return obj.transactions.exists()
 
 
-class BudgetSerializer(serializers.ModelSerializer):
+class TransactionBudgetSerializer(serializers.ModelSerializer):
     transaction_id = serializers.PrimaryKeyRelatedField(
         source="transaction",
         queryset=Transaction.objects.all(),
@@ -21,7 +31,7 @@ class BudgetSerializer(serializers.ModelSerializer):
     )
 
     class Meta:
-        model = Budget
+        model = TransactionBudget
         fields = [
             "id",
             "transaction_id",
@@ -41,7 +51,7 @@ class BudgetSerializer(serializers.ModelSerializer):
         ]
 
 
-class TransactionEntrySerializer(serializers.ModelSerializer):
+class TransactionMovementSerializer(serializers.ModelSerializer):
     transaction_id = serializers.PrimaryKeyRelatedField(
         source="transaction",
         queryset=Transaction.objects.all(),
@@ -49,12 +59,13 @@ class TransactionEntrySerializer(serializers.ModelSerializer):
     )
 
     class Meta:
-        model = TransactionEntry
+        model = TransactionMovement
         fields = [
             "id",
             "transaction_id",
+            "name",
             "amount",
-            "entry_date",
+            "movement_date",
             "note",
         ]
 
@@ -65,6 +76,7 @@ class TransactionSerializer(serializers.ModelSerializer):
         queryset=Category.objects.all(),
         write_only=True,
     )
+
     category = CategorySerializer(read_only=True)
 
     class Meta:
@@ -80,8 +92,8 @@ class TransactionSerializer(serializers.ModelSerializer):
 
 class TransactionDetailSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
-    budget = BudgetSerializer(source="budgets", many=True, read_only=True)
-    entries = TransactionEntrySerializer(many=True, read_only=True)
+    budgets = TransactionBudgetSerializer(many=True, read_only=True)
+    movements = TransactionMovementSerializer(many=True, read_only=True)
 
     class Meta:
         model = Transaction
@@ -90,6 +102,6 @@ class TransactionDetailSerializer(serializers.ModelSerializer):
             "name",
             "type",
             "category",
-            "budget",
-            "entries",
+            "budgets",
+            "movements",
         ]

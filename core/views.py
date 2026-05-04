@@ -1,20 +1,31 @@
-from decimal import Decimal
 from calendar import monthrange
+from collections import defaultdict
+from datetime import date
+from decimal import Decimal
 
 from django.db import transaction as db_transaction
+from django.db.models import Sum
 from django.shortcuts import get_object_or_404
 
 from rest_framework import status, viewsets
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
-from .models import Category, Transaction, Budget, TransactionEntry
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+
+from .models import (
+    Category,
+    Transaction,
+    TransactionBudget,
+    TransactionMovement,
+)
+
 from .serializers import (
     CategorySerializer,
     TransactionSerializer,
     TransactionDetailSerializer,
-    BudgetSerializer,
-    TransactionEntrySerializer,
+    TransactionBudgetSerializer,
+    TransactionMovementSerializer,
 )
 
 
@@ -38,6 +49,12 @@ def decimal_to_string(value):
     return f"{Decimal(value or 0):.2f}"
 
 
+def get_month_range(year, month):
+    first_day = date(year, month, 1)
+    last_day = date(year, month, monthrange(year, month)[1])
+    return first_day, last_day
+
+
 class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
@@ -47,7 +64,7 @@ class TransactionViewSet(viewsets.ModelViewSet):
     queryset = (
         Transaction.objects
         .select_related("category")
-        .prefetch_related("budgets", "entries")
+        .prefetch_related("budgets", "movements")
         .all()
     )
 
@@ -72,9 +89,9 @@ class TransactionViewSet(viewsets.ModelViewSet):
         return queryset
 
 
-class BudgetViewSet(viewsets.ModelViewSet):
-    queryset = Budget.objects.select_related("transaction").all()
-    serializer_class = BudgetSerializer
+class TransactionBudgetViewSet(viewsets.ModelViewSet):
+    queryset = TransactionBudget.objects.select_related("transaction").all()
+    serializer_class = TransactionBudgetSerializer
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -91,34 +108,121 @@ class BudgetViewSet(viewsets.ModelViewSet):
         return queryset
 
 
-class TransactionEntryViewSet(viewsets.ModelViewSet):
-    queryset = TransactionEntry.objects.select_related("transaction").all()
-    serializer_class = TransactionEntrySerializer
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            name="transaction_id",
+            type=str,
+            required=False,
+            location=OpenApiParameter.QUERY,
+            description="UUID della transaction.",
+        ),
+        OpenApiParameter(
+            name="year",
+            type=int,
+            required=False,
+            location=OpenApiParameter.QUERY,
+            description="Anno. Esempio: 2026",
+        ),
+        OpenApiParameter(
+            name="month",
+            type=int,
+            required=False,
+            location=OpenApiParameter.QUERY,
+            description="Mese da 1 a 12.",
+        ),
+        OpenApiParameter(
+            name="day",
+            type=int,
+            required=False,
+            location=OpenApiParameter.QUERY,
+            description="Giorno del mese.",
+        ),
+    ]
+)
+class TransactionMovementViewSet(viewsets.ModelViewSet):
+    queryset = TransactionMovement.objects.select_related(
+        "transaction",
+        "transaction__category",
+    ).all()
+
+    serializer_class = TransactionMovementSerializer
 
     def get_queryset(self):
         queryset = super().get_queryset()
 
         transaction_id = self.request.query_params.get("transaction_id")
-        entry_date = self.request.query_params.get("entry_date")
+        year = self.request.query_params.get("year")
+        month = self.request.query_params.get("month")
+        day = self.request.query_params.get("day")
 
         if transaction_id:
             queryset = queryset.filter(transaction_id=transaction_id)
 
-        if entry_date:
-            queryset = queryset.filter(entry_date=entry_date)
+        if year and month and day:
+            try:
+                movement_date = date(
+                    int(year),
+                    int(month),
+                    int(day),
+                )
+
+                queryset = queryset.filter(movement_date=movement_date)
+
+            except ValueError:
+                return queryset.none()
+
+        elif year and month:
+            try:
+                year = int(year)
+                month = int(month)
+
+                if 1 <= month <= 12:
+                    first_day, last_day = get_month_range(year, month)
+
+                    queryset = queryset.filter(
+                        movement_date__range=[first_day, last_day]
+                    )
+                else:
+                    return queryset.none()
+
+            except ValueError:
+                return queryset.none()
 
         return queryset
 
 
 class MonthlyOverviewAPIView(APIView):
     """
-    GET /api/flowcash/monthly-overview/?year=2026&month=1
+    GET    /api/flowcash/monthly-overview/?year=2026&month=4
+    POST   /api/flowcash/monthly-overview/
+    PATCH  /api/flowcash/monthly-overview/
+    DELETE /api/flowcash/monthly-overview/
 
     Restituisce sempre tutte le categorie.
-    Se year/month non hanno budget o entries associate,
-    le categorie vengono comunque restituite con transactions: [].
+    Se per year/month non ci sono movimenti/budget, le categorie restano presenti.
     """
 
+    @extend_schema(
+        tags=["flowcash"],
+        parameters=[
+            OpenApiParameter(
+                name="year",
+                type=int,
+                required=True,
+                location=OpenApiParameter.QUERY,
+                description="Anno di riferimento. Esempio: 2026",
+            ),
+            OpenApiParameter(
+                name="month",
+                type=int,
+                required=True,
+                location=OpenApiParameter.QUERY,
+                description="Mese di riferimento da 1 a 12. Esempio: 4",
+            ),
+        ],
+        responses={200: dict, 400: dict},
+    )
     def get(self, request):
         year_param = request.query_params.get("year")
         month_param = request.query_params.get("month")
@@ -126,7 +230,7 @@ class MonthlyOverviewAPIView(APIView):
         if not year_param or not month_param:
             return Response(
                 {
-                    "detail": "Parametri obbligatori: year e month. Esempio: ?year=2026&month=1"
+                    "detail": "Parametri obbligatori: year e month. Esempio: ?year=2026&month=4"
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -147,10 +251,7 @@ class MonthlyOverviewAPIView(APIView):
             )
 
         month_field = MONTH_FIELD_MAP[month]
-
-        first_day = f"{year}-{month:02d}-01"
-        last_day_number = monthrange(year, month)[1]
-        last_day = f"{year}-{month:02d}-{last_day_number}"
+        first_day, last_day = get_month_range(year, month)
 
         categories = Category.objects.order_by("name")
 
@@ -162,18 +263,9 @@ class MonthlyOverviewAPIView(APIView):
 
         transaction_ids = list(transactions.values_list("id", flat=True))
 
-        budgets = Budget.objects.filter(
+        budgets = TransactionBudget.objects.filter(
             transaction_id__in=transaction_ids,
             year=year,
-        )
-
-        entries = (
-            TransactionEntry.objects
-            .filter(
-                transaction_id__in=transaction_ids,
-                entry_date__range=[first_day, last_day],
-            )
-            .order_by("entry_date")
         )
 
         budgets_by_transaction_id = {
@@ -181,31 +273,37 @@ class MonthlyOverviewAPIView(APIView):
             for budget in budgets
         }
 
-        entries_by_transaction_id = {}
+        movement_totals = (
+            TransactionMovement.objects
+            .filter(
+                transaction_id__in=transaction_ids,
+                movement_date__range=[first_day, last_day],
+            )
+            .values("transaction_id")
+            .annotate(total=Sum("amount"))
+        )
 
-        for entry in entries:
-            entries_by_transaction_id.setdefault(
-                entry.transaction_id,
-                []
-            ).append(entry)
+        movement_totals_by_transaction_id = {
+            item["transaction_id"]: item["total"] or Decimal("0.00")
+            for item in movement_totals
+        }
 
         valid_transaction_ids = (
             set(budgets_by_transaction_id.keys())
-            | set(entries_by_transaction_id.keys())
+            | set(movement_totals_by_transaction_id.keys())
         )
 
-        transactions_by_category_id = {}
+        transactions_by_category_id = defaultdict(list)
 
         for transaction_obj in transactions:
-            transactions_by_category_id.setdefault(
-                transaction_obj.category_id,
-                []
-            ).append(transaction_obj)
+            transactions_by_category_id[transaction_obj.category_id].append(
+                transaction_obj
+            )
 
         income_budget_total = Decimal("0.00")
         expense_budget_total = Decimal("0.00")
-        income_entries_total = Decimal("0.00")
-        expense_entries_total = Decimal("0.00")
+        income_movements_total = Decimal("0.00")
+        expense_movements_total = Decimal("0.00")
 
         categories_response = []
 
@@ -213,8 +311,7 @@ class MonthlyOverviewAPIView(APIView):
             category_transactions = transactions_by_category_id.get(category.id, [])
 
             category_budget_total = Decimal("0.00")
-            category_entries_total = Decimal("0.00")
-
+            category_movements_total = Decimal("0.00")
             transactions_response = []
 
             for transaction_obj in category_transactions:
@@ -222,23 +319,17 @@ class MonthlyOverviewAPIView(APIView):
                     continue
 
                 budget = budgets_by_transaction_id.get(transaction_obj.id)
-                transaction_entries = entries_by_transaction_id.get(
-                    transaction_obj.id,
-                    [],
-                )
 
-                month_value = Decimal("0.00")
+                target = Decimal("0.00")
 
                 if budget:
-                    month_value = getattr(budget, month_field) or Decimal("0.00")
+                    target = getattr(budget, month_field) or Decimal("0.00")
 
-                entries_total = sum(
-                    (entry.amount for entry in transaction_entries),
+                current = movement_totals_by_transaction_id.get(
+                    transaction_obj.id,
                     Decimal("0.00"),
                 )
 
-                current = entries_total
-                target = month_value
                 remaining = max(target - current, Decimal("0.00"))
 
                 progress = (
@@ -248,15 +339,15 @@ class MonthlyOverviewAPIView(APIView):
                 )
 
                 category_budget_total += target
-                category_entries_total += current
+                category_movements_total += current
 
                 if transaction_obj.type == "Income":
                     income_budget_total += target
-                    income_entries_total += current
+                    income_movements_total += current
 
                 if transaction_obj.type == "Expense":
                     expense_budget_total += target
-                    expense_entries_total += current
+                    expense_movements_total += current
 
                 transactions_response.append(
                     {
@@ -271,23 +362,15 @@ class MonthlyOverviewAPIView(APIView):
                         "budget": {
                             "id": str(budget.id) if budget else None,
                             "year": budget.year if budget else year,
-                            "month_value": decimal_to_string(month_value),
+                            "month_value": decimal_to_string(target),
                         },
-                        "entries": [
-                            {
-                                "id": str(entry.id),
-                                "amount": decimal_to_string(entry.amount),
-                                "entry_date": entry.entry_date,
-                                "note": entry.note,
-                            }
-                            for entry in transaction_entries
-                        ],
-                        "entries_total": decimal_to_string(entries_total),
+                        "entries_total": decimal_to_string(current),
+                        "movements_total": decimal_to_string(current),
                     }
                 )
 
             category_progress = (
-                category_entries_total / category_budget_total * Decimal("100.00")
+                category_movements_total / category_budget_total * Decimal("100.00")
                 if category_budget_total > 0
                 else Decimal("0.00")
             )
@@ -298,150 +381,228 @@ class MonthlyOverviewAPIView(APIView):
                     "name": category.name,
                     "has_transactions": len(category_transactions) > 0,
                     "budget_total": decimal_to_string(category_budget_total),
-                    "entries_total": decimal_to_string(category_entries_total),
+                    "entries_total": decimal_to_string(category_movements_total),
+                    "movements_total": decimal_to_string(category_movements_total),
                     "progress": float(category_progress),
                     "transactions": transactions_response,
                 }
             )
 
-        response = {
-            "year": year,
-            "month": month,
-            "month_field": month_field,
-            "summary": {
-                "income_budget_total": decimal_to_string(income_budget_total),
-                "expense_budget_total": decimal_to_string(expense_budget_total),
-                "income_entries_total": decimal_to_string(income_entries_total),
-                "expense_entries_total": decimal_to_string(expense_entries_total),
-                "balance_budget": decimal_to_string(
-                    income_budget_total - expense_budget_total
-                ),
-                "balance_entries": decimal_to_string(
-                    income_entries_total - expense_entries_total
-                ),
-            },
-            "categories": categories_response,
-        }
+        return Response(
+            {
+                "year": year,
+                "month": month,
+                "month_field": month_field,
+                "summary": {
+                    "income_budget_total": decimal_to_string(income_budget_total),
+                    "expense_budget_total": decimal_to_string(expense_budget_total),
+                    "income_entries_total": decimal_to_string(income_movements_total),
+                    "expense_entries_total": decimal_to_string(expense_movements_total),
+                    "income_movements_total": decimal_to_string(income_movements_total),
+                    "expense_movements_total": decimal_to_string(expense_movements_total),
+                    "balance_budget": decimal_to_string(
+                        income_budget_total - expense_budget_total
+                    ),
+                    "balance_entries": decimal_to_string(
+                        income_movements_total - expense_movements_total
+                    ),
+                    "balance_movements": decimal_to_string(
+                        income_movements_total - expense_movements_total
+                    ),
+                },
+                "categories": categories_response,
+            }
+        )
 
-        return Response(response)
-
+    @extend_schema(
+        tags=["flowcash"],
+        request=dict,
+        responses={201: dict, 200: dict, 400: dict},
+    )
     @db_transaction.atomic
     def post(self, request):
         data = request.data
+        action = data.get("action", "create_transaction")
 
-        year = data.get("year")
-        month = data.get("month")
-        category_name = data.get("category_name")
-        transaction_name = data.get("transaction_name")
-        transaction_type = data.get("type")
-        budget_value = data.get("budget_value", "0.00")
-        entry_amount = data.get("entry_amount")
-        entry_date = data.get("entry_date")
-        note = data.get("note")
+        if action == "create_category":
+            name = data.get("name")
 
-        if not year or not month or not category_name or not transaction_name or not transaction_type:
+            if not name:
+                return Response(
+                    {"detail": "name obbligatorio."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            category, created = Category.objects.get_or_create(name=name)
+
             return Response(
                 {
-                    "detail": "Campi obbligatori: year, month, category_name, transaction_name, type."
+                    "detail": (
+                        "Category creata correttamente."
+                        if created
+                        else "Category già esistente."
+                    ),
+                    "category": {
+                        "id": str(category.id),
+                        "name": category.name,
+                    },
                 },
-                status=status.HTTP_400_BAD_REQUEST,
+                status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
             )
 
-        try:
-            year = int(year)
-            month = int(month)
-        except ValueError:
-            return Response(
-                {"detail": "year e month devono essere numeri interi."},
-                status=status.HTTP_400_BAD_REQUEST,
+        if action == "create_transaction":
+            year = data.get("year")
+            month = data.get("month")
+            category_name = data.get("category_name")
+            category_id = data.get("category_id")
+            transaction_name = data.get("transaction_name")
+            transaction_type = data.get("type")
+            budget_value = data.get("budget_value", "0.00")
+
+            if not year or not month or not transaction_name or not transaction_type:
+                return Response(
+                    {
+                        "detail": "Campi obbligatori: year, month, transaction_name, type."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if not category_name and not category_id:
+                return Response(
+                    {"detail": "Devi passare category_name oppure category_id."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            try:
+                year = int(year)
+                month = int(month)
+            except ValueError:
+                return Response(
+                    {"detail": "year e month devono essere numeri interi."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if month < 1 or month > 12:
+                return Response(
+                    {"detail": "month deve essere compreso tra 1 e 12."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if transaction_type not in ["Income", "Expense"]:
+                return Response(
+                    {"detail": "type deve essere Income oppure Expense."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if category_id:
+                category = get_object_or_404(Category, id=category_id)
+            else:
+                category, _ = Category.objects.get_or_create(name=category_name)
+
+            transaction_obj = Transaction.objects.create(
+                name=transaction_name,
+                type=transaction_type,
+                category=category,
             )
 
-        if month < 1 or month > 12:
-            return Response(
-                {"detail": "month deve essere compreso tra 1 e 12."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            month_field = MONTH_FIELD_MAP[month]
 
-        if transaction_type not in ["Income", "Expense"]:
-            return Response(
-                {"detail": "type deve essere Income oppure Expense."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            budget_defaults = {
+                "gen_val": Decimal("0.00"),
+                "feb_val": Decimal("0.00"),
+                "mar_val": Decimal("0.00"),
+                "apr_val": Decimal("0.00"),
+                "mag_val": Decimal("0.00"),
+                "giu_val": Decimal("0.00"),
+                "lug_val": Decimal("0.00"),
+                "ago_val": Decimal("0.00"),
+                "set_val": Decimal("0.00"),
+                "ott_val": Decimal("0.00"),
+                "nov_val": Decimal("0.00"),
+                "dic_val": Decimal("0.00"),
+            }
 
-        month_field = MONTH_FIELD_MAP[month]
+            budget_defaults[month_field] = Decimal(str(budget_value or "0.00"))
 
-        category, _ = Category.objects.get_or_create(
-            name=category_name
-        )
-
-        transaction_obj = Transaction.objects.create(
-            name=transaction_name,
-            type=transaction_type,
-            category=category,
-        )
-
-        budget_defaults = {
-            "gen_val": Decimal("0.00"),
-            "feb_val": Decimal("0.00"),
-            "mar_val": Decimal("0.00"),
-            "apr_val": Decimal("0.00"),
-            "mag_val": Decimal("0.00"),
-            "giu_val": Decimal("0.00"),
-            "lug_val": Decimal("0.00"),
-            "ago_val": Decimal("0.00"),
-            "set_val": Decimal("0.00"),
-            "ott_val": Decimal("0.00"),
-            "nov_val": Decimal("0.00"),
-            "dic_val": Decimal("0.00"),
-        }
-
-        budget_defaults[month_field] = Decimal(str(budget_value or "0.00"))
-
-        budget = Budget.objects.create(
-            transaction=transaction_obj,
-            year=year,
-            **budget_defaults,
-        )
-
-        entry = None
-
-        if entry_amount and entry_date:
-            entry = TransactionEntry.objects.create(
+            budget = TransactionBudget.objects.create(
                 transaction=transaction_obj,
-                amount=Decimal(str(entry_amount)),
-                entry_date=entry_date,
+                year=year,
+                **budget_defaults,
+            )
+
+            return Response(
+                {
+                    "detail": "Transaction creata correttamente.",
+                    "category": {
+                        "id": str(category.id),
+                        "name": category.name,
+                    },
+                    "transaction": {
+                        "id": str(transaction_obj.id),
+                        "name": transaction_obj.name,
+                        "type": transaction_obj.type,
+                    },
+                    "budget": {
+                        "id": str(budget.id),
+                        "year": budget.year,
+                        "month": month,
+                        "month_field": month_field,
+                        "month_value": decimal_to_string(getattr(budget, month_field)),
+                    },
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
+        if action == "create_movement":
+            transaction_id = data.get("transaction_id")
+            name = data.get("name")
+            amount = data.get("amount")
+            movement_date = data.get("movement_date")
+            note = data.get("note")
+
+            if not transaction_id or not name or not amount or not movement_date:
+                return Response(
+                    {
+                        "detail": "Campi obbligatori: transaction_id, name, amount, movement_date."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            transaction_obj = get_object_or_404(Transaction, id=transaction_id)
+
+            movement = TransactionMovement.objects.create(
+                transaction=transaction_obj,
+                name=name,
+                amount=Decimal(str(amount)),
+                movement_date=movement_date,
                 note=note,
             )
 
+            return Response(
+                {
+                    "detail": "Movement creato correttamente.",
+                    "movement": {
+                        "id": str(movement.id),
+                        "transaction_id": str(movement.transaction_id),
+                        "name": movement.name,
+                        "amount": decimal_to_string(movement.amount),
+                        "movement_date": movement.movement_date,
+                        "note": movement.note,
+                    },
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
         return Response(
-            {
-                "detail": "Elemento creato correttamente.",
-                "category": {
-                    "id": str(category.id),
-                    "name": category.name,
-                },
-                "transaction": {
-                    "id": str(transaction_obj.id),
-                    "name": transaction_obj.name,
-                    "type": transaction_obj.type,
-                },
-                "budget": {
-                    "id": str(budget.id),
-                    "year": budget.year,
-                    "month": month,
-                    "month_field": month_field,
-                    "month_value": decimal_to_string(getattr(budget, month_field)),
-                },
-                "entry": {
-                    "id": str(entry.id),
-                    "amount": decimal_to_string(entry.amount),
-                    "entry_date": entry.entry_date,
-                    "note": entry.note,
-                } if entry else None,
-            },
-            status=status.HTTP_201_CREATED,
+            {"detail": f"Azione non supportata: {action}"},
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
+    @extend_schema(
+        tags=["flowcash"],
+        request=dict,
+        responses={200: dict, 400: dict},
+    )
     @db_transaction.atomic
     def patch(self, request):
         data = request.data
@@ -550,7 +711,7 @@ class MonthlyOverviewAPIView(APIView):
             transaction_obj = get_object_or_404(Transaction, id=transaction_id)
             month_field = MONTH_FIELD_MAP[month]
 
-            budget, _ = Budget.objects.get_or_create(
+            budget, _ = TransactionBudget.objects.get_or_create(
                 transaction=transaction_obj,
                 year=year,
             )
@@ -563,6 +724,7 @@ class MonthlyOverviewAPIView(APIView):
                     "detail": "Budget mensile aggiornato correttamente.",
                     "budget": {
                         "id": str(budget.id),
+                        "transaction_id": str(budget.transaction_id),
                         "year": budget.year,
                         "month": month,
                         "month_field": month_field,
@@ -571,36 +733,48 @@ class MonthlyOverviewAPIView(APIView):
                 }
             )
 
-        if action == "update_entry":
-            entry_id = data.get("entry_id")
+        if action == "update_movement":
+            movement_id = data.get("movement_id")
 
-            if not entry_id:
+            if not movement_id:
                 return Response(
-                    {"detail": "entry_id obbligatorio."},
+                    {"detail": "movement_id obbligatorio."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            entry = get_object_or_404(TransactionEntry, id=entry_id)
+            movement = get_object_or_404(TransactionMovement, id=movement_id)
+
+            if "name" in data:
+                movement.name = data["name"]
 
             if "amount" in data:
-                entry.amount = Decimal(str(data["amount"]))
+                movement.amount = Decimal(str(data["amount"]))
 
-            if "entry_date" in data:
-                entry.entry_date = data["entry_date"]
+            if "movement_date" in data:
+                movement.movement_date = data["movement_date"]
 
             if "note" in data:
-                entry.note = data["note"]
+                movement.note = data["note"]
 
-            entry.save()
+            if "transaction_id" in data:
+                transaction_obj = get_object_or_404(
+                    Transaction,
+                    id=data["transaction_id"],
+                )
+                movement.transaction = transaction_obj
+
+            movement.save()
 
             return Response(
                 {
-                    "detail": "Entry aggiornata correttamente.",
-                    "entry": {
-                        "id": str(entry.id),
-                        "amount": decimal_to_string(entry.amount),
-                        "entry_date": entry.entry_date,
-                        "note": entry.note,
+                    "detail": "Movement aggiornato correttamente.",
+                    "movement": {
+                        "id": str(movement.id),
+                        "transaction_id": str(movement.transaction_id),
+                        "name": movement.name,
+                        "amount": decimal_to_string(movement.amount),
+                        "movement_date": movement.movement_date,
+                        "note": movement.note,
                     },
                 }
             )
@@ -610,6 +784,11 @@ class MonthlyOverviewAPIView(APIView):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    @extend_schema(
+        tags=["flowcash"],
+        request=dict,
+        responses={200: dict, 400: dict},
+    )
     @db_transaction.atomic
     def delete(self, request):
         data = request.data
@@ -658,26 +837,141 @@ class MonthlyOverviewAPIView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            budget = get_object_or_404(Budget, id=budget_id)
+            budget = get_object_or_404(TransactionBudget, id=budget_id)
             budget.delete()
 
             return Response({"detail": "Budget eliminato correttamente."})
 
-        if action == "delete_entry":
-            entry_id = data.get("entry_id")
+        if action == "delete_movement":
+            movement_id = data.get("movement_id")
 
-            if not entry_id:
+            if not movement_id:
                 return Response(
-                    {"detail": "entry_id obbligatorio."},
+                    {"detail": "movement_id obbligatorio."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            entry = get_object_or_404(TransactionEntry, id=entry_id)
-            entry.delete()
+            movement = get_object_or_404(TransactionMovement, id=movement_id)
+            movement.delete()
 
-            return Response({"detail": "Entry eliminata correttamente."})
+            return Response({"detail": "Movement eliminato correttamente."})
 
         return Response(
             {"detail": f"Azione non supportata: {action}"},
             status=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+class TransactionMovementsByMonthAPIView(APIView):
+    """
+    GET /api/transactions/{transaction_id}/movements/monthly/?year=2026&month=4
+    """
+
+    @extend_schema(
+        tags=["transactions"],
+        parameters=[
+            OpenApiParameter(
+                name="year",
+                type=int,
+                required=True,
+                location=OpenApiParameter.QUERY,
+                description="Anno di riferimento. Esempio: 2026",
+            ),
+            OpenApiParameter(
+                name="month",
+                type=int,
+                required=True,
+                location=OpenApiParameter.QUERY,
+                description="Mese di riferimento da 1 a 12. Esempio: 4",
+            ),
+        ],
+        responses={200: dict, 400: dict},
+    )
+    def get(self, request, transaction_id):
+        year_param = request.query_params.get("year")
+        month_param = request.query_params.get("month")
+
+        if not year_param or not month_param:
+            return Response(
+                {"detail": "Parametri obbligatori: year e month."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            year = int(year_param)
+            month = int(month_param)
+        except ValueError:
+            return Response(
+                {"detail": "year e month devono essere numeri interi."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if month < 1 or month > 12:
+            return Response(
+                {"detail": "month deve essere compreso tra 1 e 12."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        transaction_obj = get_object_or_404(Transaction, id=transaction_id)
+
+        first_day, last_day = get_month_range(year, month)
+
+        movements = (
+            TransactionMovement.objects
+            .filter(
+                transaction=transaction_obj,
+                movement_date__range=[first_day, last_day],
+            )
+            .order_by("movement_date", "name")
+        )
+
+        movements_by_day_dict = defaultdict(list)
+
+        for movement in movements:
+            movements_by_day_dict[movement.movement_date].append(movement)
+
+        movements_by_day = []
+        total = Decimal("0.00")
+
+        for movement_date, day_movements in movements_by_day_dict.items():
+            day_total = sum(
+                (movement.amount for movement in day_movements),
+                Decimal("0.00"),
+            )
+
+            total += day_total
+
+            movements_by_day.append(
+                {
+                    "date": movement_date,
+                    "total": decimal_to_string(day_total),
+                    "movements": [
+                        {
+                            "id": str(movement.id),
+                            "name": movement.name,
+                            "amount": decimal_to_string(movement.amount),
+                            "movement_date": movement.movement_date,
+                            "note": movement.note,
+                        }
+                        for movement in day_movements
+                    ],
+                }
+            )
+
+        return Response(
+            {
+                "transaction": {
+                    "id": str(transaction_obj.id),
+                    "name": transaction_obj.name,
+                    "type": transaction_obj.type,
+                    "category": {
+                        "id": str(transaction_obj.category.id),
+                        "name": transaction_obj.category.name,
+                    },
+                },
+                "year": year,
+                "month": month,
+                "total": decimal_to_string(total),
+                "movements_by_day": movements_by_day,
+            }
         )

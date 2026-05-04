@@ -61,7 +61,7 @@ class Transaction(models.Model):
         return f"{self.name} - {self.type}"
 
 
-class Budget(models.Model):
+class TransactionBudget(models.Model):
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -91,12 +91,12 @@ class Budget(models.Model):
     dic_val = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     class Meta:
-        db_table = "budget"
+        db_table = "transaction_budgets"
         ordering = ["transaction", "year"]
         constraints = [
             models.UniqueConstraint(
                 fields=["transaction", "year"],
-                name="unique_budget_transaction_year",
+                name="unique_transaction_budget_year",
             )
         ]
         indexes = [
@@ -109,7 +109,7 @@ class Budget(models.Model):
         return f"{self.transaction.name} - {self.year}"
 
 
-class TransactionEntry(models.Model):
+class TransactionMovement(models.Model):
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -119,22 +119,33 @@ class TransactionEntry(models.Model):
     transaction = models.ForeignKey(
         Transaction,
         on_delete=models.CASCADE,
-        related_name="entries",
+        related_name="movements",
         db_column="transaction_id",
     )
 
-    amount = models.DecimalField(max_digits=12, decimal_places=2)
-    entry_date = models.DateField()
-    note = models.CharField(max_length=255, blank=True, null=True)
+    name = models.CharField(max_length=120)
+
+    amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+    )
+
+    movement_date = models.DateField()
+
+    note = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+    )
 
     class Meta:
-        db_table = "transaction_entries"
-        ordering = ["-entry_date"]
+        db_table = "transaction_movements"
+        ordering = ["-movement_date", "name"]
         indexes = [
             models.Index(fields=["transaction"]),
-            models.Index(fields=["entry_date"]),
-            models.Index(fields=["transaction", "entry_date"]),
+            models.Index(fields=["movement_date"]),
+            models.Index(fields=["transaction", "movement_date"]),
         ]
 
     def __str__(self):
-        return f"{self.transaction.name} - {self.amount} - {self.entry_date}"
+        return f"{self.transaction.name} - {self.movement_date} - {self.name} - {self.amount}"

@@ -1,138 +1,46 @@
-import random
 from decimal import Decimal
 from datetime import date
 
 from django.core.management.base import BaseCommand
-from django.db import transaction
+from django.db import transaction as db_transaction
 
-from core.models import Category, Transaction, Budget, TransactionEntry
+from core.models import (
+    Category,
+    Transaction,
+    TransactionBudget,
+    TransactionMovement,
+)
 
 
 class Command(BaseCommand):
-
     help = "Popola il database con dati di test per FlowCash"
-
-    def random_month_values(self, min_value = 0.00, max_value = 1000.00, months = 12):
-        return [
-            Decimal(str(round(random.uniform(min_value, max_value), 2)))
-            for _ in range(months)
-        ]
 
     def handle(self, *args, **options):
         self.stdout.write(self.style.WARNING("Seed database started..."))
 
-        with transaction.atomic():
+        with db_transaction.atomic():
             self.create_seed_data()
 
         self.stdout.write(self.style.SUCCESS("Seed completato con successo."))
 
     def create_seed_data(self):
+        TransactionMovement.objects.all().delete()
+        TransactionBudget.objects.all().delete()
+        Transaction.objects.all().delete()
+        Category.objects.all().delete()
 
-        categories_data = [
+        categories = {}
+
+        for category_name in [
             "Abbonamenti",
             "Casa",
             "Trasporti",
             "Stipendio",
             "Svago",
             "Spesa",
-        ]
-
-        categories = {}
-
-        for category_name in categories_data:
-            category, _ = Category.objects.get_or_create(
-                name=category_name
-            )
+        ]:
+            category = Category.objects.create(name=category_name)
             categories[category_name] = category
-
-        transactions_data = [
-            {
-                "name": "Amazon Prime",
-                "type": "Expense",
-                "category": categories["Abbonamenti"],
-                "budget": {
-                    2026: self.random_month_values(),
-                    2027: self.random_month_values(),
-                },
-                "entries": [
-                    {
-                        "amount": "4.99",
-                        "entry_date": date(2026, 1, 5),
-                        "note": "Pagamento Amazon Prime gennaio",
-                    },
-                    {
-                        "amount": "4.99",
-                        "entry_date": date(2026, 2, 5),
-                        "note": "Pagamento Amazon Prime febbraio",
-                    },
-                ],
-            },
-            {
-                "name": "Netflix",
-                "type": "Expense",
-                "category": categories["Abbonamenti"],
-                "budget": {
-                    2026: self.random_month_values(),
-                },
-                "entries": [
-                    {
-                        "amount": "12.99",
-                        "entry_date": date(2026, 1, 10),
-                        "note": "Abbonamento Netflix",
-                    }
-                ],
-            },
-            {
-                "name": "Affitto",
-                "type": "Expense",
-                "category": categories["Casa"],
-                "budget": {
-                    2026: self.random_month_values(),
-                },
-                "entries": [
-                    {
-                        "amount": "650.00",
-                        "entry_date": date(2026, 1, 1),
-                        "note": "Affitto gennaio",
-                    }
-                ],
-            },
-            {
-                "name": "Benzina",
-                "type": "Expense",
-                "category": categories["Trasporti"],
-                "budget": {
-                    2026: self.random_month_values(),
-                },
-                "entries": [
-                    {
-                        "amount": "55.00",
-                        "entry_date": date(2026, 1, 8),
-                        "note": "Rifornimento",
-                    },
-                    {
-                        "amount": "62.50",
-                        "entry_date": date(2026, 1, 22),
-                        "note": "Rifornimento",
-                    },
-                ],
-            },
-            {
-                "name": "Stipendio",
-                "type": "Income",
-                "category": categories["Stipendio"],
-                "budget": {
-                    2026: self.random_month_values(),
-                },
-                "entries": [
-                    {
-                        "amount": "1800.00",
-                        "entry_date": date(2026, 1, 27),
-                        "note": "Stipendio gennaio",
-                    }
-                ],
-            },
-        ]
 
         month_fields = [
             "gen_val",
@@ -149,29 +57,159 @@ class Command(BaseCommand):
             "dic_val",
         ]
 
-        for item in transactions_data:
-            transaction_obj, _ = Transaction.objects.get_or_create(
+        data = [
+            {
+                "name": "Amazon Prime",
+                "type": "Expense",
+                "category": "Abbonamenti",
+                "budget": {
+                    2026: [4.99] * 12,
+                },
+                "movements": [
+                    {
+                        "name": "Pagamento Amazon Prime",
+                        "amount": "4.99",
+                        "movement_date": date(2026, 1, 5),
+                        "note": "Pagamento mensile",
+                    },
+                    {
+                        "name": "Pagamento Amazon Prime",
+                        "amount": "4.99",
+                        "movement_date": date(2026, 2, 5),
+                        "note": "Pagamento mensile",
+                    },
+                ],
+            },
+            {
+                "name": "Netflix",
+                "type": "Expense",
+                "category": "Abbonamenti",
+                "budget": {
+                    2026: [12.99] * 12,
+                },
+                "movements": [
+                    {
+                        "name": "Netflix gennaio",
+                        "amount": "12.99",
+                        "movement_date": date(2026, 1, 10),
+                        "note": "",
+                    }
+                ],
+            },
+            {
+                "name": "Affitto",
+                "type": "Expense",
+                "category": "Casa",
+                "budget": {
+                    2026: [650.00] * 12,
+                },
+                "movements": [
+                    {
+                        "name": "Affitto gennaio",
+                        "amount": "650.00",
+                        "movement_date": date(2026, 1, 1),
+                        "note": "",
+                    }
+                ],
+            },
+            {
+                "name": "Benzina",
+                "type": "Expense",
+                "category": "Trasporti",
+                "budget": {
+                    2026: [120.00] * 12,
+                },
+                "movements": [
+                    {
+                        "name": "Rifornimento",
+                        "amount": "55.00",
+                        "movement_date": date(2026, 1, 8),
+                        "note": "",
+                    },
+                    {
+                        "name": "Rifornimento",
+                        "amount": "62.50",
+                        "movement_date": date(2026, 1, 22),
+                        "note": "",
+                    },
+                ],
+            },
+            {
+                "name": "Stipendio",
+                "type": "Income",
+                "category": "Stipendio",
+                "budget": {
+                    2026: [1800.00] * 12,
+                },
+                "movements": [
+                    {
+                        "name": "Stipendio gennaio",
+                        "amount": "1800.00",
+                        "movement_date": date(2026, 1, 27),
+                        "note": "",
+                    }
+                ],
+            },
+            {
+                "name": "Svago",
+                "type": "Expense",
+                "category": "Svago",
+                "budget": {
+                    2026: [100.00] * 12,
+                },
+                "movements": [
+                    {
+                        "name": "Sigarette",
+                        "amount": "6.00",
+                        "movement_date": date(2026, 4, 5),
+                        "note": "",
+                    },
+                    {
+                        "name": "Panino",
+                        "amount": "8.00",
+                        "movement_date": date(2026, 4, 5),
+                        "note": "",
+                    },
+                    {
+                        "name": "Barbiere",
+                        "amount": "26.00",
+                        "movement_date": date(2026, 4, 5),
+                        "note": "",
+                    },
+                    {
+                        "name": "Cinema",
+                        "amount": "15.00",
+                        "movement_date": date(2026, 4, 12),
+                        "note": "",
+                    },
+                ],
+            },
+        ]
+
+        for item in data:
+            transaction_obj = Transaction.objects.create(
                 name=item["name"],
                 type=item["type"],
-                category=item["category"],
+                category=categories[item["category"]],
             )
 
             for year, values in item["budget"].items():
                 budget_values = {
-                    month_fields[index]: value
+                    month_fields[index]: Decimal(str(value))
                     for index, value in enumerate(values)
                 }
 
-                Budget.objects.update_or_create(
+                TransactionBudget.objects.create(
                     transaction=transaction_obj,
                     year=year,
-                    defaults=budget_values,
+                    **budget_values,
                 )
 
-            for entry in item["entries"]:
-                TransactionEntry.objects.get_or_create(
+            for movement in item["movements"]:
+                TransactionMovement.objects.create(
                     transaction=transaction_obj,
-                    amount=Decimal(entry["amount"]),
-                    entry_date=entry["entry_date"],
-                    note=entry["note"],
+                    name=movement["name"],
+                    amount=Decimal(str(movement["amount"])),
+                    movement_date=movement["movement_date"],
+                    note=movement.get("note"),
                 )
