@@ -57,7 +57,7 @@ class Command(BaseCommand):
             "dic_val",
         ]
 
-        data = [
+        seed_items = [
             {
                 "name": "Amazon Prime",
                 "type": "Expense",
@@ -186,7 +186,7 @@ class Command(BaseCommand):
             },
         ]
 
-        for item in data:
+        for item in seed_items:
             transaction_obj = Transaction.objects.create(
                 name=item["name"],
                 type=item["type"],
