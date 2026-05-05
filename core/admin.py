@@ -16,9 +16,9 @@ class CategoryAdmin(admin.ModelAdmin):
 
 @admin.register(Transaction)
 class TransactionAdmin(admin.ModelAdmin):
-    list_display = ["id", "name", "type", "category"]
+    list_display = ["id", "name", "type", "note", "category"]
     list_filter = ["type", "category"]
-    search_fields = ["name", "category__name"]
+    search_fields = ["name", "note", "category__name"]
 
 
 @admin.register(TransactionBudget)
@@ -30,6 +30,6 @@ class TransactionBudgetAdmin(admin.ModelAdmin):
 
 @admin.register(TransactionMovement)
 class TransactionMovementAdmin(admin.ModelAdmin):
-    list_display = ["id", "transaction", "name", "amount", "movement_date"]
+    list_display = ["id", "transaction", "name", "amount", "movement_date", "note"]
     list_filter = ["movement_date", "transaction__type", "transaction__category"]
     search_fields = ["name", "note", "transaction__name"]

@@ -85,6 +85,7 @@ class TransactionSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "type",
+            "note",
             "category_id",
             "category",
         ]
@@ -101,6 +102,7 @@ class TransactionDetailSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "type",
+            "note",
             "category",
             "budgets",
             "movements",

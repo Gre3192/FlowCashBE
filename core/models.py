@@ -40,6 +40,12 @@ class Transaction(models.Model):
         choices=TransactionType.choices,
     )
 
+    note = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+    )
+
     category = models.ForeignKey(
         Category,
         on_delete=models.CASCADE,

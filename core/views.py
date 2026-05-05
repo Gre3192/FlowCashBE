@@ -166,9 +166,7 @@ class TransactionMovementViewSet(viewsets.ModelViewSet):
                     int(month),
                     int(day),
                 )
-
                 queryset = queryset.filter(movement_date=movement_date)
-
             except ValueError:
                 return queryset.none()
 
@@ -179,7 +177,6 @@ class TransactionMovementViewSet(viewsets.ModelViewSet):
 
                 if 1 <= month <= 12:
                     first_day, last_day = get_month_range(year, month)
-
                     queryset = queryset.filter(
                         movement_date__range=[first_day, last_day]
                     )
@@ -193,16 +190,6 @@ class TransactionMovementViewSet(viewsets.ModelViewSet):
 
 
 class MonthlyOverviewAPIView(APIView):
-    """
-    GET    /api/flowcash/monthly-overview/?year=2026&month=4
-    POST   /api/flowcash/monthly-overview/
-    PATCH  /api/flowcash/monthly-overview/
-    DELETE /api/flowcash/monthly-overview/
-
-    Restituisce sempre tutte le categorie.
-    Se per year/month non ci sono movimenti/budget, le categorie restano presenti.
-    """
-
     @extend_schema(
         tags=["flowcash"],
         parameters=[
@@ -355,6 +342,7 @@ class MonthlyOverviewAPIView(APIView):
                         "name": transaction_obj.name,
                         "description": transaction_obj.name,
                         "type": transaction_obj.type,
+                        "note": transaction_obj.note,
                         "current": decimal_to_string(current),
                         "target": decimal_to_string(target),
                         "remaining": decimal_to_string(remaining),
@@ -458,6 +446,7 @@ class MonthlyOverviewAPIView(APIView):
             transaction_name = data.get("transaction_name")
             transaction_type = data.get("type")
             budget_value = data.get("budget_value", "0.00")
+            note = data.get("note")
 
             if not year or not month or not transaction_name or not transaction_type:
                 return Response(
@@ -502,6 +491,7 @@ class MonthlyOverviewAPIView(APIView):
             transaction_obj = Transaction.objects.create(
                 name=transaction_name,
                 type=transaction_type,
+                note=note,
                 category=category,
             )
 
@@ -541,6 +531,7 @@ class MonthlyOverviewAPIView(APIView):
                         "id": str(transaction_obj.id),
                         "name": transaction_obj.name,
                         "type": transaction_obj.type,
+                        "note": transaction_obj.note,
                     },
                     "budget": {
                         "id": str(budget.id),
@@ -663,6 +654,9 @@ class MonthlyOverviewAPIView(APIView):
 
                 transaction_obj.type = data["type"]
 
+            if "note" in data:
+                transaction_obj.note = data["note"]
+
             if "category_id" in data:
                 category = get_object_or_404(Category, id=data["category_id"])
                 transaction_obj.category = category
@@ -676,6 +670,7 @@ class MonthlyOverviewAPIView(APIView):
                         "id": str(transaction_obj.id),
                         "name": transaction_obj.name,
                         "type": transaction_obj.type,
+                        "note": transaction_obj.note,
                         "category_id": str(transaction_obj.category_id),
                     },
                 }
@@ -863,10 +858,6 @@ class MonthlyOverviewAPIView(APIView):
 
 
 class TransactionMovementsByMonthAPIView(APIView):
-    """
-    GET /api/transactions/{transaction_id}/movements/monthly/?year=2026&month=4
-    """
-
     @extend_schema(
         tags=["transactions"],
         parameters=[
@@ -964,6 +955,7 @@ class TransactionMovementsByMonthAPIView(APIView):
                     "id": str(transaction_obj.id),
                     "name": transaction_obj.name,
                     "type": transaction_obj.type,
+                    "note": transaction_obj.note,
                     "category": {
                         "id": str(transaction_obj.category.id),
                         "name": transaction_obj.category.name,
