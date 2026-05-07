@@ -10,6 +10,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.decorators import action
 
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 
@@ -188,6 +189,112 @@ class TransactionMovementViewSet(viewsets.ModelViewSet):
 
         return queryset
 
+    @extend_schema(
+        tags=["transaction-movements"],
+        request=dict,
+        responses={200: dict, 400: dict},
+        description=(
+            "Eliminazione massiva dei movimenti. "
+            "Puoi passare ids oppure usare transaction_id/year/month/day."
+        ),
+    )
+    @action(
+        detail=False,
+        methods=["delete"],
+        url_path="bulk-delete",
+    )
+    def bulk_delete(self, request):
+        data = request.data
+
+        ids = data.get("ids", [])
+        transaction_id = data.get("transaction_id")
+        year = data.get("year")
+        month = data.get("month")
+        day = data.get("day")
+
+        queryset = TransactionMovement.objects.all()
+
+        if ids:
+            if not isinstance(ids, list):
+                return Response(
+                    {"detail": "ids deve essere una lista di UUID."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            queryset = queryset.filter(id__in=ids)
+
+        else:
+            if transaction_id:
+                queryset = queryset.filter(transaction_id=transaction_id)
+
+            if year and month and day:
+                try:
+                    movement_date = date(
+                        int(year),
+                        int(month),
+                        int(day),
+                    )
+                    queryset = queryset.filter(movement_date=movement_date)
+                except ValueError:
+                    return Response(
+                        {"detail": "Data non valida."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            elif year and month:
+                try:
+                    year = int(year)
+                    month = int(month)
+
+                    if month < 1 or month > 12:
+                        return Response(
+                            {"detail": "month deve essere compreso tra 1 e 12."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+
+                    first_day, last_day = get_month_range(year, month)
+                    queryset = queryset.filter(
+                        movement_date__range=[first_day, last_day]
+                    )
+
+                except ValueError:
+                    return Response(
+                        {"detail": "year e month devono essere numeri interi."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            else:
+                return Response(
+                    {
+                        "detail": (
+                            "Per il delete massivo devi passare ids oppure almeno "
+                            "year e month. Puoi aggiungere anche transaction_id e day."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        movements_count = queryset.count()
+
+        if movements_count == 0:
+            return Response(
+                {
+                    "detail": "Nessun movement trovato da eliminare.",
+                    "deleted_count": 0,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        deleted_result = queryset.delete()
+
+        return Response(
+            {
+                "detail": "Movements eliminati correttamente.",
+                "deleted_count": movements_count,
+                "delete_result": deleted_result,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 class MonthlyOverviewAPIView(APIView):
     @extend_schema(
