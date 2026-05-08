@@ -296,6 +296,7 @@ class TransactionMovementViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
+
 class MonthlyOverviewAPIView(APIView):
     @extend_schema(
         tags=["flowcash"],
