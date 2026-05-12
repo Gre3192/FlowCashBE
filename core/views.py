@@ -7,12 +7,17 @@ from django.db import transaction as db_transaction
 from django.db.models import Sum
 from django.shortcuts import get_object_or_404
 
-from rest_framework import status, viewsets
+from rest_framework import status, viewsets, serializers
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import action
 
-from drf_spectacular.utils import extend_schema, OpenApiParameter
+from drf_spectacular.utils import (
+    extend_schema,
+    OpenApiParameter,
+    OpenApiExample,
+    inline_serializer,
+)
 
 from .models import (
     Category,
@@ -56,8 +61,14 @@ def get_month_range(year, month):
     return first_day, last_day
 
 
+def get_year_range(year):
+    first_day = date(year, 1, 1)
+    last_day = date(year, 12, 31)
+    return first_day, last_day
+
+
 class CategoryViewSet(viewsets.ModelViewSet):
-    queryset = Category.objects.all()
+    queryset = Category.objects.all().order_by("name")
     serializer_class = CategorySerializer
 
 
@@ -75,6 +86,29 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
         return TransactionSerializer
 
+    @extend_schema(
+        tags=["transactions"],
+        parameters=[
+            OpenApiParameter(
+                name="category_id",
+                type=str,
+                required=False,
+                location=OpenApiParameter.QUERY,
+                description="UUID della categoria.",
+            ),
+            OpenApiParameter(
+                name="type",
+                type=str,
+                required=False,
+                location=OpenApiParameter.QUERY,
+                description="Tipo transaction: Income oppure Expense.",
+            ),
+        ],
+        responses={200: TransactionSerializer(many=True)},
+    )
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
     def get_queryset(self):
         queryset = super().get_queryset()
 
@@ -88,6 +122,138 @@ class TransactionViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(type=transaction_type)
 
         return queryset
+
+    @extend_schema(
+        tags=["transactions"],
+        parameters=[
+            OpenApiParameter(
+                name="year",
+                type=int,
+                required=False,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Anno del periodo da eliminare. "
+                    "Se non viene passato, la transaction viene eliminata definitivamente."
+                ),
+            ),
+            OpenApiParameter(
+                name="month",
+                type=int,
+                required=False,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Mese del periodo da eliminare, da 1 a 12. "
+                    "Può essere usato solo insieme a year."
+                ),
+            ),
+        ],
+        responses={200: dict, 400: dict},
+    )
+    @db_transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        transaction_obj = self.get_object()
+
+        year_param = request.query_params.get("year")
+        month_param = request.query_params.get("month")
+
+        if not year_param and not month_param:
+            transaction_id = str(transaction_obj.id)
+
+            transaction_obj.delete()
+
+            return Response(
+                {
+                    "detail": "Transaction eliminata definitivamente.",
+                    "transaction_id": transaction_id,
+                    "delete_type": "full",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        if month_param and not year_param:
+            return Response(
+                {
+                    "detail": "Se passi month devi passare anche year."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            year = int(year_param)
+            month = int(month_param) if month_param is not None else None
+        except ValueError:
+            return Response(
+                {
+                    "detail": "year e month devono essere numeri interi."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if month is not None and (month < 1 or month > 12):
+            return Response(
+                {
+                    "detail": "month deve essere compreso tra 1 e 12."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if month is not None:
+            month_field = MONTH_FIELD_MAP[month]
+            first_day, last_day = get_month_range(year, month)
+
+            deleted_movements_count, _ = TransactionMovement.objects.filter(
+                transaction=transaction_obj,
+                movement_date__range=[first_day, last_day],
+            ).delete()
+
+            budget = TransactionBudget.objects.filter(
+                transaction=transaction_obj,
+                year=year,
+            ).first()
+
+            budget_updated = False
+
+            if budget:
+                setattr(budget, month_field, Decimal("0.00"))
+                budget.save(update_fields=[month_field])
+                budget_updated = True
+
+            return Response(
+                {
+                    "detail": "Transaction rimossa dal mese selezionato.",
+                    "transaction_id": str(transaction_obj.id),
+                    "delete_type": "month",
+                    "year": year,
+                    "month": month,
+                    "deleted_movements": deleted_movements_count,
+                    "budget_updated": budget_updated,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        first_day, last_day = get_year_range(year)
+
+        deleted_movements_count, _ = TransactionMovement.objects.filter(
+            transaction=transaction_obj,
+            movement_date__range=[first_day, last_day],
+        ).delete()
+
+        deleted_budgets_count, _ = TransactionBudget.objects.filter(
+            transaction=transaction_obj,
+            year=year,
+        ).delete()
+
+        return Response(
+            {
+                "detail": "Transaction rimossa dall'anno selezionato.",
+                "transaction_id": str(transaction_obj.id),
+                "delete_type": "year",
+                "year": year,
+                "deleted_movements": deleted_movements_count,
+                "deleted_budgets": deleted_budgets_count,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class TransactionBudgetViewSet(viewsets.ModelViewSet):
@@ -191,8 +357,54 @@ class TransactionMovementViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         tags=["transaction-movements"],
-        request=dict,
+        request=inline_serializer(
+            name="TransactionMovementBulkDeleteRequest",
+            fields={
+                "ids": serializers.ListField(
+                    child=serializers.UUIDField(),
+                    required=False,
+                ),
+                "transaction_id": serializers.UUIDField(required=False),
+                "year": serializers.IntegerField(required=False),
+                "month": serializers.IntegerField(required=False),
+                "day": serializers.IntegerField(required=False),
+            },
+        ),
         responses={200: dict, 400: dict},
+        examples=[
+            OpenApiExample(
+                "Elimina movements tramite ids",
+                value={
+                    "ids": [
+                        "00000000-0000-0000-0000-000000000000",
+                        "11111111-1111-1111-1111-111111111111",
+                    ]
+                },
+                request_only=True,
+                media_type="application/json",
+            ),
+            OpenApiExample(
+                "Elimina movements di una transaction in un giorno",
+                value={
+                    "transaction_id": "00000000-0000-0000-0000-000000000000",
+                    "year": 2026,
+                    "month": 4,
+                    "day": 5,
+                },
+                request_only=True,
+                media_type="application/json",
+            ),
+            OpenApiExample(
+                "Elimina movements di una transaction in un mese",
+                value={
+                    "transaction_id": "00000000-0000-0000-0000-000000000000",
+                    "year": 2026,
+                    "month": 4,
+                },
+                request_only=True,
+                media_type="application/json",
+            ),
+        ],
         description=(
             "Eliminazione massiva dei movimenti. "
             "Puoi passare ids oppure usare transaction_id/year/month/day."
@@ -383,11 +595,6 @@ class MonthlyOverviewAPIView(APIView):
             for item in movement_totals
         }
 
-        valid_transaction_ids = (
-            set(budgets_by_transaction_id.keys())
-            | set(movement_totals_by_transaction_id.keys())
-        )
-
         transactions_by_category_id = defaultdict(list)
 
         for transaction_obj in transactions:
@@ -410,9 +617,6 @@ class MonthlyOverviewAPIView(APIView):
             transactions_response = []
 
             for transaction_obj in category_transactions:
-                if transaction_obj.id not in valid_transaction_ids:
-                    continue
-
                 budget = budgets_by_transaction_id.get(transaction_obj.id)
 
                 target = Decimal("0.00")
@@ -433,6 +637,8 @@ class MonthlyOverviewAPIView(APIView):
                     else Decimal("0.00")
                 )
 
+                needs_budget = budget is None or target == Decimal("0.00")
+
                 category_budget_total += target
                 category_movements_total += current
 
@@ -451,15 +657,24 @@ class MonthlyOverviewAPIView(APIView):
                         "description": transaction_obj.name,
                         "type": transaction_obj.type,
                         "note": transaction_obj.note,
+
                         "current": decimal_to_string(current),
                         "target": decimal_to_string(target),
                         "remaining": decimal_to_string(remaining),
                         "progress": float(progress),
-                        "budget": {
-                            "id": str(budget.id) if budget else None,
-                            "year": budget.year if budget else year,
-                            "month_value": decimal_to_string(target),
-                        },
+
+                        "needs_budget": needs_budget,
+
+                        "budget": (
+                            {
+                                "id": str(budget.id),
+                                "year": budget.year,
+                                "month_value": decimal_to_string(target),
+                            }
+                            if budget
+                            else None
+                        ),
+
                         "entries_total": decimal_to_string(current),
                         "movements_total": decimal_to_string(current),
                     }
@@ -512,7 +727,42 @@ class MonthlyOverviewAPIView(APIView):
 
     @extend_schema(
         tags=["flowcash"],
-        request=dict,
+        request=inline_serializer(
+            name="MonthlyOverviewPostRequest",
+            fields={
+                "action": serializers.ChoiceField(
+                    choices=[
+                        "create_category",
+                        "create_transaction",
+                        "create_movement",
+                    ],
+                    required=False,
+                ),
+                "name": serializers.CharField(required=False),
+                "year": serializers.IntegerField(required=False),
+                "month": serializers.IntegerField(required=False),
+                "category_id": serializers.UUIDField(required=False),
+                "category_name": serializers.CharField(required=False),
+                "transaction_name": serializers.CharField(required=False),
+                "type": serializers.ChoiceField(
+                    choices=["Income", "Expense"],
+                    required=False,
+                ),
+                "budget_value": serializers.DecimalField(
+                    max_digits=12,
+                    decimal_places=2,
+                    required=False,
+                ),
+                "transaction_id": serializers.UUIDField(required=False),
+                "amount": serializers.DecimalField(
+                    max_digits=12,
+                    decimal_places=2,
+                    required=False,
+                ),
+                "movement_date": serializers.DateField(required=False),
+                "note": serializers.CharField(required=False, allow_blank=True),
+            },
+        ),
         responses={201: dict, 200: dict, 400: dict},
     )
     @db_transaction.atomic
@@ -547,19 +797,16 @@ class MonthlyOverviewAPIView(APIView):
             )
 
         if action == "create_transaction":
-            year = data.get("year")
-            month = data.get("month")
             category_name = data.get("category_name")
             category_id = data.get("category_id")
             transaction_name = data.get("transaction_name")
             transaction_type = data.get("type")
-            budget_value = data.get("budget_value", "0.00")
             note = data.get("note")
 
-            if not year or not month or not transaction_name or not transaction_type:
+            if not transaction_name or not transaction_type:
                 return Response(
                     {
-                        "detail": "Campi obbligatori: year, month, transaction_name, type."
+                        "detail": "Campi obbligatori: transaction_name, type."
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
@@ -567,21 +814,6 @@ class MonthlyOverviewAPIView(APIView):
             if not category_name and not category_id:
                 return Response(
                     {"detail": "Devi passare category_name oppure category_id."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            try:
-                year = int(year)
-                month = int(month)
-            except ValueError:
-                return Response(
-                    {"detail": "year e month devono essere numeri interi."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            if month < 1 or month > 12:
-                return Response(
-                    {"detail": "month deve essere compreso tra 1 e 12."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -603,34 +835,9 @@ class MonthlyOverviewAPIView(APIView):
                 category=category,
             )
 
-            month_field = MONTH_FIELD_MAP[month]
-
-            budget_defaults = {
-                "gen_val": Decimal("0.00"),
-                "feb_val": Decimal("0.00"),
-                "mar_val": Decimal("0.00"),
-                "apr_val": Decimal("0.00"),
-                "mag_val": Decimal("0.00"),
-                "giu_val": Decimal("0.00"),
-                "lug_val": Decimal("0.00"),
-                "ago_val": Decimal("0.00"),
-                "set_val": Decimal("0.00"),
-                "ott_val": Decimal("0.00"),
-                "nov_val": Decimal("0.00"),
-                "dic_val": Decimal("0.00"),
-            }
-
-            budget_defaults[month_field] = Decimal(str(budget_value or "0.00"))
-
-            budget = TransactionBudget.objects.create(
-                transaction=transaction_obj,
-                year=year,
-                **budget_defaults,
-            )
-
             return Response(
                 {
-                    "detail": "Transaction creata correttamente.",
+                    "detail": "Transaction creata correttamente. Budget non ancora inserito.",
                     "category": {
                         "id": str(category.id),
                         "name": category.name,
@@ -640,14 +847,9 @@ class MonthlyOverviewAPIView(APIView):
                         "name": transaction_obj.name,
                         "type": transaction_obj.type,
                         "note": transaction_obj.note,
+                        "needs_budget": True,
                     },
-                    "budget": {
-                        "id": str(budget.id),
-                        "year": budget.year,
-                        "month": month,
-                        "month_field": month_field,
-                        "month_value": decimal_to_string(getattr(budget, month_field)),
-                    },
+                    "budget": None,
                 },
                 status=status.HTTP_201_CREATED,
             )
@@ -699,7 +901,41 @@ class MonthlyOverviewAPIView(APIView):
 
     @extend_schema(
         tags=["flowcash"],
-        request=dict,
+        request=inline_serializer(
+            name="MonthlyOverviewPatchRequest",
+            fields={
+                "action": serializers.ChoiceField(
+                    choices=[
+                        "update_category",
+                        "update_transaction",
+                        "update_budget_month",
+                        "update_movement",
+                    ]
+                ),
+                "category_id": serializers.UUIDField(required=False),
+                "transaction_id": serializers.UUIDField(required=False),
+                "movement_id": serializers.UUIDField(required=False),
+                "name": serializers.CharField(required=False),
+                "type": serializers.ChoiceField(
+                    choices=["Income", "Expense"],
+                    required=False,
+                ),
+                "note": serializers.CharField(required=False, allow_blank=True),
+                "year": serializers.IntegerField(required=False),
+                "month": serializers.IntegerField(required=False),
+                "value": serializers.DecimalField(
+                    max_digits=12,
+                    decimal_places=2,
+                    required=False,
+                ),
+                "amount": serializers.DecimalField(
+                    max_digits=12,
+                    decimal_places=2,
+                    required=False,
+                ),
+                "movement_date": serializers.DateField(required=False),
+            },
+        ),
         responses={200: dict, 400: dict},
     )
     @db_transaction.atomic
@@ -881,83 +1117,6 @@ class MonthlyOverviewAPIView(APIView):
                     },
                 }
             )
-
-        return Response(
-            {"detail": f"Azione non supportata: {action}"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    @extend_schema(
-        tags=["flowcash"],
-        request=dict,
-        responses={200: dict, 400: dict},
-    )
-    @db_transaction.atomic
-    def delete(self, request):
-        data = request.data
-        action = data.get("action")
-
-        if not action:
-            return Response(
-                {"detail": "Campo obbligatorio: action."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if action == "delete_category":
-            category_id = data.get("category_id")
-
-            if not category_id:
-                return Response(
-                    {"detail": "category_id obbligatorio."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            category = get_object_or_404(Category, id=category_id)
-            category.delete()
-
-            return Response({"detail": "Category eliminata correttamente."})
-
-        if action == "delete_transaction":
-            transaction_id = data.get("transaction_id")
-
-            if not transaction_id:
-                return Response(
-                    {"detail": "transaction_id obbligatorio."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            transaction_obj = get_object_or_404(Transaction, id=transaction_id)
-            transaction_obj.delete()
-
-            return Response({"detail": "Transaction eliminata correttamente."})
-
-        if action == "delete_budget":
-            budget_id = data.get("budget_id")
-
-            if not budget_id:
-                return Response(
-                    {"detail": "budget_id obbligatorio."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            budget = get_object_or_404(TransactionBudget, id=budget_id)
-            budget.delete()
-
-            return Response({"detail": "Budget eliminato correttamente."})
-
-        if action == "delete_movement":
-            movement_id = data.get("movement_id")
-
-            if not movement_id:
-                return Response(
-                    {"detail": "movement_id obbligatorio."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            movement = get_object_or_404(TransactionMovement, id=movement_id)
-            movement.delete()
-
-            return Response({"detail": "Movement eliminato correttamente."})
 
         return Response(
             {"detail": f"Azione non supportata: {action}"},
