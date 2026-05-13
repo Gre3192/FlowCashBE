@@ -158,7 +158,6 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
         if not year_param and not month_param:
             transaction_id = str(transaction_obj.id)
-
             transaction_obj.delete()
 
             return Response(
@@ -172,9 +171,7 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
         if month_param and not year_param:
             return Response(
-                {
-                    "detail": "Se passi month devi passare anche year."
-                },
+                {"detail": "Se passi month devi passare anche year."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -183,17 +180,13 @@ class TransactionViewSet(viewsets.ModelViewSet):
             month = int(month_param) if month_param is not None else None
         except ValueError:
             return Response(
-                {
-                    "detail": "year e month devono essere numeri interi."
-                },
+                {"detail": "year e month devono essere numeri interi."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if month is not None and (month < 1 or month > 12):
             return Response(
-                {
-                    "detail": "month deve essere compreso tra 1 e 12."
-                },
+                {"detail": "month deve essere compreso tra 1 e 12."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -570,6 +563,12 @@ class MonthlyOverviewAPIView(APIView):
 
         transaction_ids = list(transactions.values_list("id", flat=True))
 
+        transaction_ids_with_any_budget = set(
+            TransactionBudget.objects
+            .filter(transaction_id__in=transaction_ids)
+            .values_list("transaction_id", flat=True)
+        )
+
         budgets = TransactionBudget.objects.filter(
             transaction_id__in=transaction_ids,
             year=year,
@@ -604,8 +603,8 @@ class MonthlyOverviewAPIView(APIView):
 
         income_budget_total = Decimal("0.00")
         expense_budget_total = Decimal("0.00")
-        income_movements_total = Decimal("0.00")
-        expense_movements_total = Decimal("0.00")
+        income_current_total = Decimal("0.00")
+        expense_current_total = Decimal("0.00")
 
         categories_response = []
 
@@ -613,7 +612,7 @@ class MonthlyOverviewAPIView(APIView):
             category_transactions = transactions_by_category_id.get(category.id, [])
 
             category_budget_total = Decimal("0.00")
-            category_movements_total = Decimal("0.00")
+            category_current_total = Decimal("0.00")
             transactions_response = []
 
             for transaction_obj in category_transactions:
@@ -637,51 +636,45 @@ class MonthlyOverviewAPIView(APIView):
                     else Decimal("0.00")
                 )
 
-                needs_budget = budget is None or target == Decimal("0.00")
+                needs_budget = (
+                    transaction_obj.id not in transaction_ids_with_any_budget
+                )
 
                 category_budget_total += target
-                category_movements_total += current
+                category_current_total += current
 
                 if transaction_obj.type == "Income":
                     income_budget_total += target
-                    income_movements_total += current
+                    income_current_total += current
 
                 if transaction_obj.type == "Expense":
                     expense_budget_total += target
-                    expense_movements_total += current
+                    expense_current_total += current
 
                 transactions_response.append(
                     {
                         "id": str(transaction_obj.id),
                         "name": transaction_obj.name,
-                        "description": transaction_obj.name,
                         "type": transaction_obj.type,
                         "note": transaction_obj.note,
-
                         "current": decimal_to_string(current),
                         "target": decimal_to_string(target),
                         "remaining": decimal_to_string(remaining),
                         "progress": float(progress),
-
                         "needs_budget": needs_budget,
-
                         "budget": (
                             {
                                 "id": str(budget.id),
                                 "year": budget.year,
-                                "month_value": decimal_to_string(target),
                             }
                             if budget
                             else None
                         ),
-
-                        "entries_total": decimal_to_string(current),
-                        "movements_total": decimal_to_string(current),
                     }
                 )
 
             category_progress = (
-                category_movements_total / category_budget_total * Decimal("100.00")
+                category_current_total / category_budget_total * Decimal("100.00")
                 if category_budget_total > 0
                 else Decimal("0.00")
             )
@@ -692,8 +685,7 @@ class MonthlyOverviewAPIView(APIView):
                     "name": category.name,
                     "has_transactions": len(category_transactions) > 0,
                     "budget_total": decimal_to_string(category_budget_total),
-                    "entries_total": decimal_to_string(category_movements_total),
-                    "movements_total": decimal_to_string(category_movements_total),
+                    "current_total": decimal_to_string(category_current_total),
                     "progress": float(category_progress),
                     "transactions": transactions_response,
                 }
@@ -707,18 +699,13 @@ class MonthlyOverviewAPIView(APIView):
                 "summary": {
                     "income_budget_total": decimal_to_string(income_budget_total),
                     "expense_budget_total": decimal_to_string(expense_budget_total),
-                    "income_entries_total": decimal_to_string(income_movements_total),
-                    "expense_entries_total": decimal_to_string(expense_movements_total),
-                    "income_movements_total": decimal_to_string(income_movements_total),
-                    "expense_movements_total": decimal_to_string(expense_movements_total),
+                    "income_current_total": decimal_to_string(income_current_total),
+                    "expense_current_total": decimal_to_string(expense_current_total),
                     "balance_budget": decimal_to_string(
                         income_budget_total - expense_budget_total
                     ),
-                    "balance_entries": decimal_to_string(
-                        income_movements_total - expense_movements_total
-                    ),
-                    "balance_movements": decimal_to_string(
-                        income_movements_total - expense_movements_total
+                    "balance_current": decimal_to_string(
+                        income_current_total - expense_current_total
                     ),
                 },
                 "categories": categories_response,
@@ -737,33 +724,90 @@ class MonthlyOverviewAPIView(APIView):
                         "create_movement",
                     ],
                     required=False,
+                    help_text=(
+                        "Azione da eseguire. Se non viene passata, "
+                        "il backend assume create_transaction."
+                    ),
                 ),
-                "name": serializers.CharField(required=False),
-                "year": serializers.IntegerField(required=False),
-                "month": serializers.IntegerField(required=False),
-                "category_id": serializers.UUIDField(required=False),
-                "category_name": serializers.CharField(required=False),
-                "transaction_name": serializers.CharField(required=False),
+                "name": serializers.CharField(
+                    required=False,
+                    help_text="Nome categoria. Usato con create_category.",
+                ),
+                "category_id": serializers.UUIDField(
+                    required=False,
+                    help_text="UUID categoria esistente. Usato con create_transaction.",
+                ),
+                "category_name": serializers.CharField(
+                    required=False,
+                    help_text="Nome nuova categoria. Alternativa a category_id.",
+                ),
+                "transaction_name": serializers.CharField(
+                    required=False,
+                    help_text="Nome della transaction da creare.",
+                ),
                 "type": serializers.ChoiceField(
                     choices=["Income", "Expense"],
                     required=False,
+                    help_text="Tipo transaction: Income oppure Expense.",
                 ),
-                "budget_value": serializers.DecimalField(
-                    max_digits=12,
-                    decimal_places=2,
+                "transaction_id": serializers.UUIDField(
                     required=False,
+                    help_text="UUID della transaction. Usato con create_movement.",
                 ),
-                "transaction_id": serializers.UUIDField(required=False),
                 "amount": serializers.DecimalField(
                     max_digits=12,
                     decimal_places=2,
                     required=False,
+                    help_text="Importo movement.",
                 ),
-                "movement_date": serializers.DateField(required=False),
-                "note": serializers.CharField(required=False, allow_blank=True),
+                "movement_date": serializers.DateField(
+                    required=False,
+                    help_text="Data movement nel formato YYYY-MM-DD.",
+                ),
+                "note": serializers.CharField(
+                    required=False,
+                    allow_blank=True,
+                    help_text="Nota libera.",
+                ),
             },
         ),
         responses={201: dict, 200: dict, 400: dict},
+        examples=[
+            OpenApiExample(
+                "Crea categoria",
+                value={
+                    "action": "create_category",
+                    "name": "Casa",
+                },
+                request_only=True,
+                media_type="application/json",
+            ),
+            OpenApiExample(
+                "Crea transaction senza budget",
+                value={
+                    "action": "create_transaction",
+                    "category_id": "00000000-0000-0000-0000-000000000000",
+                    "transaction_name": "Netflix",
+                    "type": "Expense",
+                    "note": "Abbonamento streaming mensile",
+                },
+                request_only=True,
+                media_type="application/json",
+            ),
+            OpenApiExample(
+                "Crea movement",
+                value={
+                    "action": "create_movement",
+                    "transaction_id": "00000000-0000-0000-0000-000000000000",
+                    "name": "Netflix aprile",
+                    "amount": "12.99",
+                    "movement_date": "2026-04-10",
+                    "note": "Pagamento Netflix aprile",
+                },
+                request_only=True,
+                media_type="application/json",
+            ),
+        ],
     )
     @db_transaction.atomic
     def post(self, request):
@@ -805,9 +849,7 @@ class MonthlyOverviewAPIView(APIView):
 
             if not transaction_name or not transaction_type:
                 return Response(
-                    {
-                        "detail": "Campi obbligatori: transaction_name, type."
-                    },
+                    {"detail": "Campi obbligatori: transaction_name, type."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -848,8 +890,8 @@ class MonthlyOverviewAPIView(APIView):
                         "type": transaction_obj.type,
                         "note": transaction_obj.note,
                         "needs_budget": True,
+                        "budget": None,
                     },
-                    "budget": None,
                 },
                 status=status.HTTP_201_CREATED,
             )
