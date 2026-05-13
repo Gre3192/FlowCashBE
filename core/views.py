@@ -32,6 +32,7 @@ from .serializers import (
     TransactionDetailSerializer,
     TransactionBudgetSerializer,
     TransactionMovementSerializer,
+    TransactionBudgetYearSerializer
 )
 
 
@@ -250,7 +251,15 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
 
 class TransactionBudgetViewSet(viewsets.ModelViewSet):
-    queryset = TransactionBudget.objects.select_related("transaction").all()
+    queryset = (
+        TransactionBudget.objects
+        .select_related(
+            "transaction",
+            "transaction__category",
+        )
+        .order_by("year")
+    )
+
     serializer_class = TransactionBudgetSerializer
 
     def get_queryset(self):
@@ -267,6 +276,61 @@ class TransactionBudgetViewSet(viewsets.ModelViewSet):
 
         return queryset
 
+    @extend_schema(
+        tags=["transaction-budgets"],
+        parameters=[
+            OpenApiParameter(
+                name="transaction_id",
+                type=str,
+                required=False,
+                location=OpenApiParameter.QUERY,
+                description="UUID della transaction. Se passato, restituisce i budget raggruppati per transaction.",
+            ),
+            OpenApiParameter(
+                name="year",
+                type=int,
+                required=False,
+                location=OpenApiParameter.QUERY,
+                description="Filtra i budget per anno.",
+            ),
+        ],
+        responses={200: dict},
+    )
+    def list(self, request, *args, **kwargs):
+        transaction_id = request.query_params.get("transaction_id")
+
+        queryset = self.get_queryset()
+
+        if transaction_id:
+            transaction_obj = get_object_or_404(
+                Transaction.objects.select_related("category"),
+                id=transaction_id,
+            )
+
+            budgets = TransactionBudgetYearSerializer(
+                queryset,
+                many=True,
+            ).data
+
+            return Response(
+                {
+                    "transaction": {
+                        "id": str(transaction_obj.id),
+                        "name": transaction_obj.name,
+                        "type": transaction_obj.type,
+                        "note": transaction_obj.note,
+                        "category": {
+                            "id": str(transaction_obj.category.id),
+                            "name": transaction_obj.category.name,
+                        },
+                    },
+                    "budgets": budgets,
+                }
+            )
+
+        serializer = self.get_serializer(queryset, many=True)
+
+        return Response(serializer.data)
 
 @extend_schema(
     parameters=[
