@@ -550,6 +550,13 @@ class MonthlyOverviewAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        available_budget_years = list(
+            TransactionBudget.objects
+            .values_list("year", flat=True)
+            .distinct()
+            .order_by("year")
+        )
+
         month_field = MONTH_FIELD_MAP[month]
         first_day, last_day = get_month_range(year, month)
 
@@ -696,6 +703,7 @@ class MonthlyOverviewAPIView(APIView):
                 "year": year,
                 "month": month,
                 "month_field": month_field,
+                "available_budget_years": available_budget_years,
                 "summary": {
                     "income_budget_total": decimal_to_string(income_budget_total),
                     "expense_budget_total": decimal_to_string(expense_budget_total),
