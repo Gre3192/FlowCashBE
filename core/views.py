@@ -332,6 +332,164 @@ class TransactionBudgetViewSet(viewsets.ModelViewSet):
 
         return Response(serializer.data)
 
+    @extend_schema(
+        tags=["transaction-budgets"],
+        request=inline_serializer(
+            name="TransactionBudgetBulkCreateRequest",
+            fields={
+                "transaction_id": serializers.UUIDField(),
+                "budgets": serializers.ListField(
+                    child=serializers.DictField(),
+                ),
+            },
+        ),
+        responses={201: dict, 400: dict},
+        examples=[
+            OpenApiExample(
+                "Crea budget per più anni",
+                value={
+                    "transaction_id": "00000000-0000-0000-0000-000000000000",
+                    "budgets": [
+                        {
+                            "year": 2026,
+                            "gen_val": "650.00",
+                            "feb_val": "650.00",
+                            "mar_val": "650.00",
+                            "apr_val": "650.00",
+                            "mag_val": "650.00",
+                            "giu_val": "650.00",
+                            "lug_val": "650.00",
+                            "ago_val": "650.00",
+                            "set_val": "650.00",
+                            "ott_val": "650.00",
+                            "nov_val": "650.00",
+                            "dic_val": "650.00",
+                        },
+                        {
+                            "year": 2027,
+                            "gen_val": "700.00",
+                            "feb_val": "700.00",
+                            "mar_val": "700.00",
+                            "apr_val": "700.00",
+                            "mag_val": "700.00",
+                            "giu_val": "700.00",
+                            "lug_val": "700.00",
+                            "ago_val": "700.00",
+                            "set_val": "700.00",
+                            "ott_val": "700.00",
+                            "nov_val": "700.00",
+                            "dic_val": "700.00",
+                        },
+                    ],
+                },
+                request_only=True,
+                media_type="application/json",
+            ),
+        ],
+    )
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-create",
+    )
+    @db_transaction.atomic
+    def bulk_create(self, request):
+        data = request.data
+
+        transaction_id = data.get("transaction_id")
+        budgets_data = data.get("budgets")
+
+        if not transaction_id:
+            return Response(
+                {"detail": "transaction_id obbligatorio."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not budgets_data or not isinstance(budgets_data, list):
+            return Response(
+                {"detail": "budgets deve essere una lista di oggetti."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        transaction_obj = get_object_or_404(
+            Transaction.objects.select_related("category"),
+            id=transaction_id,
+        )
+
+        month_fields = [
+            "gen_val",
+            "feb_val",
+            "mar_val",
+            "apr_val",
+            "mag_val",
+            "giu_val",
+            "lug_val",
+            "ago_val",
+            "set_val",
+            "ott_val",
+            "nov_val",
+            "dic_val",
+        ]
+
+        created_budgets = []
+        updated_budgets = []
+
+        for budget_data in budgets_data:
+            year = budget_data.get("year")
+
+            if not year:
+                return Response(
+                    {"detail": "Ogni budget deve avere year."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            try:
+                year = int(year)
+            except ValueError:
+                return Response(
+                    {"detail": "year deve essere un numero intero."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            defaults = {}
+
+            for field in month_fields:
+                defaults[field] = Decimal(str(budget_data.get(field, "0.00") or "0.00"))
+
+            budget, created = TransactionBudget.objects.update_or_create(
+                transaction=transaction_obj,
+                year=year,
+                defaults=defaults,
+            )
+
+            serialized_budget = TransactionBudgetYearSerializer(budget).data
+
+            if created:
+                created_budgets.append(serialized_budget)
+            else:
+                updated_budgets.append(serialized_budget)
+
+        return Response(
+            {
+                "detail": "Budget creati/aggiornati correttamente.",
+                "transaction": {
+                    "id": str(transaction_obj.id),
+                    "name": transaction_obj.name,
+                    "type": transaction_obj.type,
+                    "note": transaction_obj.note,
+                    "category": {
+                        "id": str(transaction_obj.category.id),
+                        "name": transaction_obj.category.name,
+                    },
+                },
+                "created_count": len(created_budgets),
+                "updated_count": len(updated_budgets),
+                "created_budgets": created_budgets,
+                "updated_budgets": updated_budgets,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
 @extend_schema(
     parameters=[
         OpenApiParameter(
