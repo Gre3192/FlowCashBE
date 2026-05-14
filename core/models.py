@@ -3,6 +3,11 @@ from django.db import models
 
 
 class Category(models.Model):
+    class CategoryType(models.TextChoices):
+        INCOME = "Income", "Income"
+        EXPENSE = "Expense", "Expense"
+        MIXED = "Mixed", "Mixed"
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -11,11 +16,18 @@ class Category(models.Model):
 
     name = models.CharField(max_length=120, unique=True)
 
+    type = models.CharField(
+        max_length=20,
+        choices=CategoryType.choices,
+        default=CategoryType.MIXED,
+    )
+
     class Meta:
         db_table = "categories"
         ordering = ["name"]
         indexes = [
             models.Index(fields=["name"]),
+            models.Index(fields=["type"]),
         ]
 
     def __str__(self):
